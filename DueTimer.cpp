@@ -67,18 +67,19 @@ DueTimer::DueTimer(unsigned short _timer) : timer(_timer){
     */
 }
 
-DueTimer DueTimer::getAvailable(void){
-    /*
-        Return the first timer with no callback set
-    */
 
-    for(int i = 0; i < NUM_TIMERS; i++){
-        if(!callbacks[i])
-            return DueTimer(i);
-    }
-    // Default, return Timer0;
-    return DueTimer(0);
-}
+//DueTimer DueTimer::getAvailable(void){
+//    /*
+//        Return the first timer with no callback set
+//    */
+//
+//    for(int i = 0; i < NUM_TIMERS; i++){
+//        if(!callbacks[i]
+//            return DueTimer(i);
+//    }
+//    // Default, return Timer0;
+//    return DueTimer(0);
+//}
 
 DueTimer& DueTimer::attachInterrupt(void (*isr)()){
     /*
@@ -111,12 +112,11 @@ DueTimer& DueTimer::start(long microseconds){
     if(microseconds > 0)
         setPeriod(microseconds);
     
-    if(_frequency[timer] <= 0)
-        setFrequency(1);
+    if (callbacks[timer]){
+        NVIC_ClearPendingIRQ(Timers[timer].irq);
+        NVIC_EnableIRQ(Timers[timer].irq);
+    }
 
-    NVIC_ClearPendingIRQ(Timers[timer].irq);
-    NVIC_EnableIRQ(Timers[timer].irq);
-    
     TC_Start(Timers[timer].tc, Timers[timer].channel);
 
     return *this;
@@ -174,22 +174,9 @@ uint8_t DueTimer::bestClock(double frequency, uint32_t& retRC){
     return clockConfig[bestClock].flag;
 }
 
-DueTimer& DueTimer::setFrequency(double frequency){
-    /*
-        Set the timer frequency (in Hz)
-    */
-
-    // Prevent negative frequencies
-    if(frequency <= 0) { frequency = 1; }
-
-    // Remember the frequency — see below how the exact frequency is reported instead
-    //_frequency[timer] = frequency;
-
+DueTimer& DueTimer::setExternal(){
     // Get current timer configuration
     Timer t = Timers[timer];
-
-    uint32_t rc = 0;
-    uint8_t clock;
 
     // Tell the Power Management Controller to disable 
     // the write protection of the (Timer/Counter) registers:
@@ -198,34 +185,22 @@ DueTimer& DueTimer::setFrequency(double frequency){
     // Enable clock for the timer
     pmc_enable_periph_clk((uint32_t)t.irq);
 
-    // Find the best clock for the wanted frequency
-    clock = bestClock(frequency, rc);
+    _frequency[timer] = -1.0; // maybe should be NaN
 
-    switch (clock) {
-      case TC_CMR_TCCLKS_TIMER_CLOCK1:
-        _frequency[timer] = (double)VARIANT_MCK / 2.0 / (double)rc;
-        break;
-      case TC_CMR_TCCLKS_TIMER_CLOCK2:
-        _frequency[timer] = (double)VARIANT_MCK / 8.0 / (double)rc;
-        break;
-      case TC_CMR_TCCLKS_TIMER_CLOCK3:
-        _frequency[timer] = (double)VARIANT_MCK / 32.0 / (double)rc;
-        break;
-      default: // TC_CMR_TCCLKS_TIMER_CLOCK4
-        _frequency[timer] = (double)VARIANT_MCK / 128.0 / (double)rc;
-        break;
-    }
+    // Set up the Timer in capture mode (TC_CMR_WAVE not set)
+    // on IOA/B (TC_CMR_ABETRG)
+    // on rising edges (TC_CMR_ETRGEDG_RISING)
 
-    // Set up the Timer in waveform mode which creates a PWM
-    // in UP mode with automatic trigger on RC Compare
-    // and sets it up with the determined internal clock as clock input.
-    TC_Configure(t.tc, t.channel, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | clock);
+    // THE RIGHT CONFIGURATION FOR TRIGGERING ON PIN 11 (TIOA) AND USING IT AS A RESET SIGNAL SOMEHOW?
+    //TC_Configure(t.tc, t.channel, TC_CMR_ABETRG | TC_CMR_TCCLKS_TIMER_CLOCK1 | TC_CMR_ENETRG | TC_CMR_ETRGEDG_RISING);
+    TC_Configure(t.tc, t.channel, TC_CMR_TCCLKS_XC0);
+
     // Reset counter and fire interrupt when RC value is matched:
-    TC_SetRC(t.tc, t.channel, rc);
+    //TC_SetRC(t.tc, t.channel, rc);
     // Enable the RC Compare Interrupt...
-    t.tc->TC_CHANNEL[t.channel].TC_IER=TC_IER_CPCS;
+    //t.tc->TC_CHANNEL[t.channel].TC_IER=TC_IER_CPCS;
     // ... and disable all others.
-    t.tc->TC_CHANNEL[t.channel].TC_IDR=~TC_IER_CPCS;
+    //t.tc->TC_CHANNEL[t.channel].TC_IDR=~TC_IER_CPCS;
 
     return *this;
 }
@@ -313,6 +288,11 @@ long DueTimer::getPeriod(void) const {
     return 1.0/getFrequency()*1000000;
 }
 
+uint32_t DueTimer::getTimerVal() const {
+    // Get current timer configuration
+    Timer t = Timers[timer];
+    return TC_ReadCV(t.tc, t.channel);
+}
 
 /*
     Implementation of the timer callbacks defined in 
